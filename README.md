@@ -69,14 +69,16 @@ brew install molten-vk
 
 ## Run
 
-**Browser lab** (live camera + English box):
+**Talk to the arm** (click, speak, live captions):
 
 ```bash
 source scripts/vulkan_env.sh
 uv run python scripts/ask_arm_server.py
 ```
 
-Open http://127.0.0.1:8765 — pick a preset or type a goal, then **Run**.
+Open http://127.0.0.1:8765 — click once, talk. Browser speech recognition streams the words; when you pause, that sentence is the next goal. Keep talking for the next one.
+
+Typed lab UI: http://127.0.0.1:8765/lab
 
 **Headless suite** (motion → reach → grasp/place → buttons):
 
@@ -95,12 +97,14 @@ jev_robotics/ask_session.py  # live loop for the browser
 jev_robotics/common.py       # Jev HTTP client
 scripts/ask_arm_server.py    # local UI
 scripts/run_jev_ask.py       # batch eval
-web/ask_arm/index.html
+web/ask_arm/demo.html        # talk-to-the-arm view
+web/ask_arm/index.html       # typed lab
 reset_env/                   # two-button ManiSkill env
 ```
 
 ## Notes
 
+- Click-to-talk uses the browser’s on-device speech recognition. Nothing is sent to OpenAI.
 - This is **sim**, not a real cell. Perception is privileged state, not a camera model.
 - Button episodes are **not** killed on the first press in this repo, so `red then blue` can finish.
 - The primitive set is the whole skill library. New tasks = new English, or add a primitive if the catalog cannot express it.

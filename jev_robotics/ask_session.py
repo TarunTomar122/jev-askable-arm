@@ -24,6 +24,24 @@ from .primitives import (
 )
 
 
+def hide_goal_marker(env: Any) -> None:
+    """Leave the arm and cube; hide the green target used by PickCube."""
+    import sapien
+
+    site = getattr(env.unwrapped, "goal_site", None)
+    if site is None:
+        return
+    objs = getattr(site, "_objs", None) or []
+    for obj in objs:
+        entity = getattr(obj, "entity", obj)
+        finder = getattr(entity, "find_component_by_type", None)
+        if finder is None:
+            continue
+        body = finder(sapien.render.RenderBodyComponent)
+        if body is not None:
+            body.visibility = 0.0
+
+
 def first_array(value: Any) -> np.ndarray:
     if isinstance(value, dict):
         for key in ("rgb", "rgb_array", "Color"):
@@ -124,7 +142,11 @@ def infer_success(env: Any, goal: str, start: dict[str, Any], task: Task | None)
         return float(tcp_position(env)[2]) >= float(start["tcp"][2]) + 0.04
     if "downward" in text or "lower" in text:
         return float(tcp_position(env)[2]) <= float(start["tcp"][2]) - 0.03
-    return False
+        return False
+
+
+def goal_key(text: str) -> str:
+    return " ".join(str(text).lower().split())
 
 
 class AskArmSession:
@@ -164,6 +186,7 @@ class AskArmSession:
             "holding": None,
         }
         self.live_objects: dict[str, Any] = {}
+        self.spoken_queue: list[str] = []
 
     def serve_sim(self) -> None:
         """Run forever on the main thread. SAPIEN aborts if gym.make happens elsewhere."""
@@ -256,6 +279,7 @@ class AskArmSession:
                 "tokens": self.tokens,
                 "camera": self.render_ok,
                 "primitive_count": len(KINDS),
+                "queue": list(self.spoken_queue),
             }
         payload["frame"] = jpeg_b64(frame)
         return jsonable(payload)
@@ -295,11 +319,22 @@ class AskArmSession:
         goal: str,
         task_name: str | None = None,
         max_decisions: int | None = None,
+        hide_target: bool = False,
+        cinematic: bool = False,
     ) -> dict[str, Any]:
         if not str(goal).strip():
             raise ValueError("goal is empty")
         self.stop_event.set()
-        return self._submit(self._reset_body, env_id, seed, goal, task_name, max_decisions)
+        return self._submit(
+            self._reset_body,
+            env_id,
+            seed,
+            goal,
+            task_name,
+            max_decisions,
+            hide_target,
+            cinematic,
+        )
 
     def _reset_body(
         self,
@@ -308,6 +343,8 @@ class AskArmSession:
         goal: str,
         task_name: str | None,
         max_decisions: int | None,
+        hide_target: bool = False,
+        cinematic: bool = False,
     ) -> dict[str, Any]:
         old = self.env
         self.env = None
@@ -317,8 +354,15 @@ class AskArmSession:
             except Exception:
                 pass
         render_mode = "rgb_array" if self.camera else None
-        env = make_arm_env(env_id, max_steps=800, render_mode=render_mode)
+        env = make_arm_env(
+            env_id,
+            max_steps=800,
+            render_mode=render_mode,
+            cinematic=cinematic,
+        )
         env.reset(seed=int(seed))
+        if hide_target:
+            hide_goal_marker(env)
         task = match_task(env_id, goal, task_name)
         if max_decisions is None:
             max_decisions = 40 if task is None else task.max_decisions
@@ -344,10 +388,83 @@ class AskArmSession:
         self.render_ok = self.camera
         self._physics = 0
         self.frame = None
+        self.spoken_queue = []
         self.stop_event.clear()
         self._publish_scene()
         self._grab_frame(force=True)
         return self.public_state()
+
+    def boot_demo(self, seed: int = 0) -> dict[str, Any]:
+        state = self.reset(
+            "PickCube-v1",
+            seed,
+            "Listen for the next spoken goal.",
+            hide_target=True,
+            cinematic=True,
+            max_decisions=8,
+        )
+        self._kick_spoken()
+        return state
+
+    def say(self, goal: str) -> dict[str, Any]:
+        text = str(goal).strip()
+        if not text:
+            raise ValueError("empty")
+        key = goal_key(text)
+        with self.lock:
+            if any(goal_key(item) == key for item in self.spoken_queue):
+                return {"ok": True, "duplicate": True, "goal": text}
+            if self.running and key == goal_key(self.goal):
+                return {"ok": True, "duplicate": True, "goal": text}
+            if self.running or not self.ready:
+                self.spoken_queue.append(text)
+                self.status = f"Queued: {text}"
+                return {"ok": True, "queued": True, "goal": text}
+            self.running = True
+            self.status = text
+        self._submit(self._say_body, text, wait=False)
+        return {"ok": True, "queued": False, "goal": text}
+
+    def _kick_spoken(self) -> None:
+        with self.lock:
+            if self.running or not self.ready or not self.spoken_queue:
+                return
+            text = self.spoken_queue.pop(0)
+            self.running = True
+            self.status = text
+        self._submit(self._say_body, text, wait=False)
+
+    def _begin_goal(self, goal: str) -> None:
+        self.stop_event.clear()
+        self.goal = goal
+        self.task = match_task(self.env_id, goal, None)
+        self.start = {
+            "tcp": tcp_position(self.env).copy(),
+            "objects": scene_objects(self.env),
+        }
+        self.history = []
+        self.chain = []
+        self.jev_done = False
+        self.env_done = False
+        self.success = infer_success(self.env, goal, self.start, self.task)
+        self.max_decisions = 10 if self.task is None else self.task.max_decisions
+        self.running = True
+        self.status = goal
+
+    def _say_body(self, goal: str) -> None:
+        self._begin_goal(goal)
+        self._run_body()
+
+    def _run_loop_once(self) -> None:
+        while not self.stop_event.is_set():
+            if (
+                self.success
+                or self.jev_done
+                or self.env_done
+                or len(self.history) >= self.max_decisions
+            ):
+                break
+            self._step_body()
 
     def step_once(self) -> dict[str, Any]:
         return self._submit(self._step_body)
@@ -388,6 +505,16 @@ class AskArmSession:
         )
         self.chain.append(ident)
         self.jev_done = kind == "done"
+        if (
+            not self.jev_done
+            and len(self.history) >= 3
+            and self.history[-1]["kind"] == self.history[-2]["kind"] == self.history[-3]["kind"]
+        ):
+            self.jev_done = True
+            self.status = "Stopped a repeat loop."
+            self._publish_scene()
+            self._grab_frame(force=True)
+            return self.public_state()
         self.env_done = bool(executor.last_done)
         self.success = infer_success(env, self.goal, self.start, self.task)
         if self.success:
@@ -421,15 +548,13 @@ class AskArmSession:
 
     def _run_body(self) -> None:
         try:
-            while not self.stop_event.is_set():
-                if (
-                    self.success
-                    or self.jev_done
-                    or self.env_done
-                    or len(self.history) >= self.max_decisions
-                ):
+            while True:
+                self._run_loop_once()
+                with self.lock:
+                    nxt = self.spoken_queue.pop(0) if self.spoken_queue else None
+                if nxt is None or self.stop_event.is_set():
                     break
-                self._step_body()
+                self._begin_goal(nxt)
             if self.success:
                 self.status = "Success."
             elif self.stop_event.is_set() and not self.success:

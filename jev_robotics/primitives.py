@@ -447,6 +447,7 @@ def make_arm_env(
     env_id: str,
     max_steps: int = 250,
     render_mode: str | None = None,
+    cinematic: bool = False,
 ) -> gym.Env:
     import mani_skill.envs  # noqa: F401
     import reset_env  # noqa: F401
@@ -459,6 +460,21 @@ def make_arm_env(
         "max_episode_steps": max_steps,
         "control_mode": "pd_ee_delta_pos",
     }
+    if cinematic:
+        from mani_skill.utils import sapien_utils
+
+        # Same 3/4 as PickCube default, 16:9 so fullscreen cover does not crop.
+        kwargs["human_render_camera_configs"] = {
+            "render_camera": {
+                "width": 1600,
+                "height": 900,
+                "fov": 1.0,
+                "pose": sapien_utils.look_at(
+                    eye=[0.6, 0.7, 0.6],
+                    target=[0.0, 0.0, 0.22],
+                ),
+            }
+        }
     return ContinueEpisode(gym.make(env_id, **kwargs))
 
 

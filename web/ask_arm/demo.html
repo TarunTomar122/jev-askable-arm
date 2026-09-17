@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Askable arm</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; height: 100%; background: #000; color: #fff;
+      font-family: "SF Pro Display", "Helvetica Neue", sans-serif;
+      overflow: hidden;
+      cursor: pointer;
+    }
+    #frame {
+      position: fixed; inset: 0;
+      width: 100%; height: 100%;
+      object-fit: cover;
+      object-position: center 42%;
+      background: #000;
+    }
+    #shade {
+      position: fixed; inset: 0;
+      background: linear-gradient(to top, rgba(0,0,0,0.45) 0%, transparent 32%);
+      pointer-events: none;
+    }
+    #caption {
+      position: fixed; left: 7vw; right: 7vw; bottom: 9vh;
+      font-size: clamp(28px, 4.4vw, 64px);
+      line-height: 1.15;
+      font-weight: 500;
+      letter-spacing: -0.03em;
+      text-shadow: 0 2px 24px rgba(0,0,0,0.85);
+      min-height: 1.2em;
+      white-space: pre-wrap;
+      pointer-events: none;
+    }
+    #caption.ghost { color: rgba(255,255,255,0.42); }
+    #gate {
+      position: fixed; inset: 0;
+      display: grid; place-items: center;
+      background: #000;
+      z-index: 2;
+    }
+    #gate p {
+      font-size: clamp(22px, 3vw, 36px);
+      letter-spacing: -0.03em;
+      margin: 0;
+    }
+    #gate span { display: block; margin-top: 12px; font-size: 14px; letter-spacing: 0.12em; text-transform: uppercase; color: #888; }
+  </style>
+</head>
+<body>
+  <div id="gate"><p>Click to talk<span>on-device mic · arm + cube</span></p></div>
+  <img id="frame" alt="">
+  <div id="shade"></div>
+  <div id="caption"></div>
+  <script>
+    const frame = document.getElementById("frame");
+    const caption = document.getElementById("caption");
+    const gate = document.getElementById("gate");
+    let lastSent = "";
+    let listening = false;
+    let rec = null;
+    let shown = "";
+    let wanted = "";
+    let ghosting = true;
+
+    function paint(next, ghost) {
+      wanted = next || "";
+      ghosting = !!ghost;
+      caption.classList.toggle("ghost", ghosting);
+      if (!wanted.startsWith(shown)) shown = "";
+      pump();
+    }
+
+    function pump() {
+      caption.classList.toggle("ghost", ghosting);
+      if (shown === wanted) {
+        caption.textContent = shown;
+        return;
+      }
+      const step = Math.max(1, Math.ceil((wanted.length - shown.length) / 3));
+      shown = wanted.slice(0, shown.length + step);
+      caption.textContent = shown;
+      window.requestAnimationFrame(pump);
+    }
+
+    async function api(path, opts) {
+      const res = await fetch(path, opts);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    }
+
+    async function refresh() {
+      try {
+        const state = await api("/api/state");
+        if (state.frame) frame.src = `data:image/jpeg;base64,${state.frame}`;
+      } catch (error) {
+        paint(error.message, true);
+      }
+    }
+
+    async function sendGoal(text) {
+      const goal = text.trim().replace(/[.\s]+$/g, "");
+      if (goal.length < 3) return;
+      const key = goal.toLowerCase();
+      if (key === lastSent) return;
+      lastSent = key;
+      paint(goal, false);
+      await api("/api/say", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ goal }),
+      });
+    }
+
+    function startSpeech() {
+      const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!Speech) {
+        paint("This browser has no speech recognition.", true);
+        return;
+      }
+      rec = new Speech();
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.maxAlternatives = 1;
+      rec.lang = "en-US";
+      rec.onresult = (event) => {
+        let interim = "";
+        let finalText = "";
+        for (let i = event.resultIndex; i < event.results.length; i += 1) {
+          const piece = event.results[i][0].transcript;
+          if (event.results[i].isFinal) finalText += piece;
+          else interim += piece;
+        }
+        if (interim) paint(interim, true);
+        if (finalText) sendGoal(finalText);
+      };
+      rec.onend = () => {
+        if (listening) {
+          try { rec.start(); } catch (error) {}
+        }
+      };
+      rec.onerror = (event) => {
+        if (event.error === "no-speech" || event.error === "aborted" || event.error === "network") return;
+        paint(event.error, true);
+      };
+      listening = true;
+      try { rec.start(); } catch (error) { paint(error.message, true); }
+    }
+
+    function enter() {
+      gate.remove();
+      startSpeech();
+      api("/api/boot", { method: "POST" }).then(refresh).catch((error) => {
+        paint(error.message, true);
+      });
+      refresh();
+      setInterval(refresh, 180);
+    }
+
+    gate.addEventListener("click", enter, { once: true });
+  </script>
+</body>
+</html>

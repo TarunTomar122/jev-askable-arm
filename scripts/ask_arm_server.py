@@ -30,6 +30,7 @@ from jev_robotics.common import jsonable
 
 ROOT = Path(__file__).resolve().parents[1]
 PAGE = ROOT / "web" / "ask_arm" / "index.html"
+DEMO = ROOT / "web" / "ask_arm" / "demo.html"
 
 
 def make_handler(session: AskArmSession):
@@ -55,15 +56,21 @@ def make_handler(session: AskArmSession):
                 return {}
             return json.loads(raw.decode())
 
+        def _html(self, path: Path) -> None:
+            body = path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_GET(self) -> None:  # noqa: N802
             route = urlparse(self.path)
-            if route.path in {"/", "/index.html"}:
-                body = PAGE.read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+            if route.path in {"/", "/demo", "/demo.html"}:
+                self._html(DEMO)
+            elif route.path in {"/lab", "/index.html"}:
+                self._html(PAGE)
             elif route.path == "/api/meta":
                 self._json(session.meta())
             elif route.path == "/api/state":
@@ -74,7 +81,12 @@ def make_handler(session: AskArmSession):
         def do_POST(self) -> None:  # noqa: N802
             route = urlparse(self.path)
             try:
-                if route.path == "/api/reset":
+                if route.path == "/api/boot":
+                    self._json(session.boot_demo())
+                elif route.path == "/api/say":
+                    body = self._read_json()
+                    self._json(session.say(str(body.get("goal") or "")), 202)
+                elif route.path == "/api/reset":
                     body = self._read_json()
                     state = session.reset(
                         env_id=str(body.get("env_id") or "PickCube-v1"),
@@ -108,7 +120,8 @@ def main() -> None:
     args = parser.parse_args()
     session = AskArmSession(camera=not args.no_camera)
     server = ThreadingHTTPServer((args.host, args.port), make_handler(session))
-    print(f"Askable arm lab: http://{args.host}:{args.port}", flush=True)
+    print(f"Askable arm: http://{args.host}:{args.port}", flush=True)
+    print(f"Lab UI:      http://{args.host}:{args.port}/lab", flush=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True, name="ask-arm-http")
     thread.start()
     try:
