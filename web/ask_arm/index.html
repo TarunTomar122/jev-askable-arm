@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Askable arm</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101214;
+      --panel: #181c1f;
+      --line: #2b3237;
+      --text: #edf0f2;
+      --muted: #9aa4ab;
+      --accent: #d7e27c;
+      --bad: #e08a7a;
+      --ok: #8fd4a8;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); }
+    main { width: min(1280px, calc(100% - 28px)); margin: 20px auto 48px; }
+    header { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; margin-bottom: 16px; }
+    h1 { margin: 0; font-size: 22px; letter-spacing: -0.04em; }
+    .sub { color: var(--muted); font-size: 13px; }
+    .badge { border: 1px solid var(--line); color: var(--muted); padding: 6px 9px; border-radius: 999px; font-size: 12px; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr); gap: 16px; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+    .screen { background: #0b0d0e; min-height: 420px; display: grid; place-items: center; color: #9aa4ab; font-size: 12px; }
+    #frame { width: 100%; height: auto; max-height: 560px; object-fit: contain; background: #0b0d0e; }
+    .views { display: grid; grid-template-columns: 1fr 1fr; gap: 0; border-top: 1px solid var(--line); }
+    canvas { width: 100%; height: 110px; display: block; background: #0b0d0e; }
+    .pad { padding: 14px 16px; }
+    label { display: block; color: var(--muted); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; margin: 10px 0 6px; }
+    textarea, select, input[type="number"] {
+      width: 100%; background: #101214; color: var(--text); border: 1px solid var(--line);
+      border-radius: 8px; padding: 8px 10px; font: inherit;
+    }
+    textarea { min-height: 72px; resize: vertical; }
+    .row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    .btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    button {
+      background: #22282c; color: var(--text); border: 1px solid var(--line);
+      border-radius: 8px; padding: 8px 12px; font: inherit; cursor: pointer;
+    }
+    button.primary { background: var(--accent); color: #111; border-color: var(--accent); font-weight: 700; }
+    button:disabled { opacity: 0.45; cursor: wait; }
+    .presets { display: flex; flex-wrap: wrap; gap: 6px; }
+    .presets button { font-size: 12px; padding: 6px 8px; }
+    .presets button.on { border-color: var(--accent); color: var(--accent); }
+    .status { min-height: 1.4em; margin: 8px 0 0; font-size: 13px; }
+    .status.ok { color: var(--ok); }
+    .status.bad { color: var(--bad); }
+    .facts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 12px; color: var(--muted); margin-top: 10px; }
+    .facts b { color: var(--text); font-weight: 600; }
+    .chain { max-height: 280px; overflow: auto; font-size: 12px; }
+    .chain li { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px solid #23282c; }
+    .chain b { color: var(--accent); font-weight: 600; }
+    details { margin-top: 12px; color: var(--muted); font-size: 12px; }
+    @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Askable arm</h1>
+        <p class="sub">Type a goal. Jev picks the next primitive. No training.</p>
+      </div>
+      <div class="badge" id="count">30 primitives</div>
+    </header>
+    <section class="layout">
+      <div class="panel">
+        <div class="screen" id="screen">
+          <span id="hint">Loading the robot camera…</span>
+          <img id="frame" alt="Simulator camera" hidden>
+        </div>
+        <div class="views">
+          <canvas id="top" width="420" height="180"></canvas>
+          <canvas id="side" width="420" height="180"></canvas>
+        </div>
+      </div>
+      <div class="panel pad">
+        <label>Preset</label>
+        <div class="presets" id="presets"></div>
+        <label>Goal</label>
+        <textarea id="goal" placeholder="Pick up the red cube."></textarea>
+        <div class="row">
+          <div>
+            <label>Env</label>
+            <select id="env"></select>
+          </div>
+          <div>
+            <label>Seed</label>
+            <input id="seed" type="number" value="0">
+          </div>
+          <div>
+            <label>Max steps</label>
+            <input id="max" type="number" value="40">
+          </div>
+        </div>
+        <div class="btns">
+          <button class="primary" id="run">Run</button>
+          <button id="step">Step</button>
+          <button id="stop">Stop</button>
+          <button id="reset">Reset scene</button>
+        </div>
+        <p class="status" id="status">Loading…</p>
+        <div class="facts">
+          <div>Gripper <b id="grip">—</b></div>
+          <div>Holding <b id="hold">—</b></div>
+          <div>Decisions <b id="dec">0</b></div>
+          <div>Success <b id="ok">no</b></div>
+        </div>
+        <label>Chain</label>
+        <ol class="chain" id="chain"></ol>
+        <details>
+          <summary>Primitive catalog</summary>
+          <div id="catalog"></div>
+        </details>
+      </div>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let meta = { presets: [], primitives: [], envs: [] };
+    let selected = "";
+    let busy = false;
+
+    function worldTo(canvas, x, y, z, mode) {
+      const w = canvas.width, h = canvas.height;
+      const span = 0.42;
+      const u = mode === "top" ? x : x;
+      const v = mode === "top" ? y : z;
+      const px = (u / span + 0.5) * w;
+      const py = mode === "top" ? (0.5 - v / span) * h : (0.82 - v / 0.34) * h;
+      return [px, py];
+    }
+
+    function drawScene(state) {
+      const objects = state.objects || {};
+      const tcp = (state.robot && state.robot.tcp_position_m) || [0, 0, 0];
+      for (const [id, mode] of [["top", "top"], ["side", "side"]]) {
+        const canvas = $(id);
+        const ctx = canvas.getContext("2d");
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#0b0d0e";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#9aa4ab";
+        ctx.font = "12px ui-monospace, monospace";
+        ctx.fillText(mode === "top" ? "top (x/y)" : "side (x/z)", 10, 16);
+        if (mode === "side") {
+          ctx.strokeStyle = "#2b3237";
+          ctx.beginPath();
+          const [, ty] = worldTo(canvas, 0, 0, 0, "side");
+          ctx.moveTo(0, ty); ctx.lineTo(canvas.width, ty); ctx.stroke();
+        }
+        const colors = {
+          red_cube: "#e08a7a", green_cube: "#8fd4a8", green_target: "#6fbf88",
+          blue_button: "#7aa7e0", red_button: "#d46a5c"
+        };
+        for (const [name, payload] of Object.entries(objects)) {
+          const p = payload.position || [0, 0, 0];
+          const [px, py] = worldTo(canvas, p[0], p[1], p[2], mode);
+          ctx.fillStyle = colors[name] || "#ccc";
+          ctx.beginPath();
+          ctx.arc(px, py, name.includes("button") ? 8 : 10, 0, Math.PI * 2);
+          ctx.fill();
+          if (payload.pressed) {
+            ctx.strokeStyle = "#fff";
+            ctx.stroke();
+          }
+        }
+        const [ax, ay] = worldTo(canvas, tcp[0], tcp[1], tcp[2], mode);
+        ctx.fillStyle = "#d7e27c";
+        ctx.beginPath();
+        ctx.arc(ax, ay, state.robot && state.robot.gripper === "closed" ? 5 : 8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    function render(state) {
+      if (state.frame) {
+        $("hint").hidden = true;
+        $("frame").hidden = false;
+        $("frame").src = `data:image/jpeg;base64,${state.frame}`;
+      } else {
+        $("hint").hidden = false;
+        $("frame").hidden = true;
+      }
+      $("status").textContent = state.error || state.status || "";
+      $("status").className = "status " + (state.error ? "bad" : state.success ? "ok" : "");
+      $("grip").textContent = (state.robot && state.robot.gripper) || "—";
+      $("hold").textContent = (state.robot && state.robot.holding) || "none";
+      $("dec").textContent = `${state.decisions || 0}/${state.max_decisions || 0}`;
+      $("ok").textContent = state.success ? "yes" : "no";
+      $("chain").innerHTML = (state.chain || []).map((item) =>
+        `<li><span><b>${item.id}</b> · ${Math.round(item.latency_ms)} ms</span><span>${item.confidence}</span></li>`
+      ).join("");
+      drawScene(state);
+      const running = !!state.running;
+      $("run").disabled = running;
+      $("step").disabled = running;
+      $("reset").disabled = running;
+    }
+
+    async function api(path, opts) {
+      const res = await fetch(path, opts);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    }
+
+    async function refresh() {
+      try { render(await api("/api/state")); }
+      catch (error) { $("status").textContent = error.message; $("status").className = "status bad"; }
+    }
+
+    function form() {
+      return {
+        env_id: $("env").value,
+        seed: Number($("seed").value || 0),
+        goal: $("goal").value.trim(),
+        task_name: selected || null,
+        max_decisions: Number($("max").value || 40),
+      };
+    }
+
+    async function resetScene() {
+      const payload = form();
+      if (!payload.goal) { $("status").textContent = "Write a goal first."; return; }
+      render(await api("/api/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }));
+    }
+
+    $("run").onclick = async () => {
+      await resetScene();
+      await api("/api/run", { method: "POST" });
+      refresh();
+    };
+    $("step").onclick = async () => {
+      if (!busy) {
+        try {
+          busy = true;
+          render(await api("/api/step", { method: "POST" }));
+        } catch (error) {
+          if (/reset a scene/i.test(error.message)) await resetScene();
+          else { $("status").textContent = error.message; $("status").className = "status bad"; }
+        } finally { busy = false; }
+      }
+    };
+    $("stop").onclick = () => api("/api/stop", { method: "POST" }).then(refresh);
+    $("reset").onclick = resetScene;
+
+    (async () => {
+      meta = await api("/api/meta");
+      $("count").textContent = `${meta.primitive_count} primitives`;
+      $("env").innerHTML = meta.envs.map((id) => `<option>${id}</option>`).join("");
+      $("catalog").innerHTML = meta.primitives.map((item) =>
+        `<div><b>${item.id}</b> — ${item.description}</div>`
+      ).join("");
+      $("presets").innerHTML = meta.presets.map((task) =>
+        `<button data-name="${task.name}">${task.name}</button>`
+      ).join("");
+      $("presets").onclick = (event) => {
+        const btn = event.target.closest("button");
+        if (!btn) return;
+        selected = btn.dataset.name;
+        const task = meta.presets.find((item) => item.name === selected);
+        for (const el of $("presets").querySelectorAll("button")) el.classList.toggle("on", el === btn);
+        $("goal").value = task.goal;
+        $("env").value = task.env_id;
+        $("max").value = task.max_decisions;
+      };
+      $("goal").addEventListener("input", () => {
+        const task = meta.presets.find((item) => item.goal === $("goal").value.trim());
+        selected = task ? task.name : "";
+        for (const el of $("presets").querySelectorAll("button")) {
+          el.classList.toggle("on", el.dataset.name === selected);
+        }
+      });
+      const first = meta.presets.find((item) => item.name === "grasp_cube") || meta.presets[0];
+      if (first) $("presets").querySelector(`[data-name="${first.name}"]`).click();
+      await resetScene();
+      setInterval(refresh, 250);
+    })();
+  </script>
+</body>
+</html>
